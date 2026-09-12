@@ -47,6 +47,13 @@ DEFAULT_DAYS_OUTPUT = "/home/ubuntu/imports/workflowy_days.json"
 DEFAULT_PREFIX = "workflowy-import"
 
 
+def notify_best_effort(message: str, *, prefix: str) -> None:
+    try:
+        telegram_notify.notify(message, prefix=prefix)
+    except Exception as error:
+        print(f"[WARN] Telegram notification failed: {type(error).__name__}", file=sys.stderr)
+
+
 def utc_z_from_epoch(epoch_seconds: Optional[int]) -> Optional[str]:
     if epoch_seconds is None:
         return None
@@ -302,7 +309,7 @@ def main() -> int:
         )
         conn.commit()
 
-        telegram_notify.notify(
+        notify_best_effort(
             f"✅ Import OK\nDB: {db_path}\nJSON: {json_file}\n"
             f"Days: {len(days)} ({days_output})\n"
             f"Items: {total} (new {imported}, upd {updated})",
@@ -326,7 +333,7 @@ def main() -> int:
         except Exception:
             pass
 
-        telegram_notify.notify(
+        notify_best_effort(
             f"❌ Import FAILED\nDB: {db_path}\nError: {str(e)}\n\n{err}",
             prefix=prefix,
         )
