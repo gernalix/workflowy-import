@@ -1,8 +1,8 @@
-# v1
+# v3
 """workflowy_job.py
 
 Oracle job: fetch Workflowy list-all JSON via API key, write JSON backup,
-then import into SQLite workflowy.db for Datasette.
+import into SQLite workflowy.db for Datasette, and publish a compact Calendar-day feed.
 
 Requirements:
 - python3-requests (or requests installed)
@@ -14,6 +14,7 @@ Env (via /etc/workflowy_import/workflowy_import.env):
 - WORKFLOWY_JSON_DIR: optional, default /home/ubuntu/imports/workflowy_backups
 - WORKFLOWY_JSON_LATEST: optional, default /home/ubuntu/imports/workflowy_list_all.json
 - WORKFLOWY_DB_PATH: optional, default /home/ubuntu/db/workflowy.db
+- WORKFLOWY_DAYS_OUTPUT: optional, default /home/ubuntu/imports/workflowy_days.json
 - WORKFLOWY_NOTIFY_PREFIX: optional, default workflowy-import
 """
 
@@ -35,12 +36,14 @@ except Exception as e:  # pragma: no cover
     sys.exit(10)
 
 import telegram_notify
+from workflowy_days import extract_workflowy_days, write_feed_atomic
 
 
 DEFAULT_API_URL = "https://beta.workflowy.com/api/beta/list-all/"
 DEFAULT_JSON_DIR = "/home/ubuntu/imports/workflowy_backups"
 DEFAULT_JSON_LATEST = "/home/ubuntu/imports/workflowy_list_all.json"
 DEFAULT_DB_PATH = "/home/ubuntu/db/workflowy.db"
+DEFAULT_DAYS_OUTPUT = "/home/ubuntu/imports/workflowy_days.json"
 DEFAULT_PREFIX = "workflowy-import"
 
 
@@ -117,6 +120,27 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         error TEXT
     );
     """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS workflowy_days (
+        date TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        imported_at TEXT NOT NULL,
+        PRIMARY KEY(date, node_id)
+    );
+    """)
+
+
+def replace_workflowy_days(
+    conn: sqlite3.Connection,
+    days: list[dict[str, str]],
+    imported_at: str,
+) -> None:
+    """Replace the complete materialized-day index in the same DB transaction."""
+    conn.execute("DELETE FROM workflowy_days")
+    conn.executemany(
+        "INSERT INTO workflowy_days(date,node_id,imported_at) VALUES (?,?,?)",
+        [(item["date"], item["node_id"], imported_at) for item in days],
+    )
 
 
 def fetch_workflowy_json(api_key: str, api_url: str, timeout_s: int = 300) -> Dict[str, Any]:
@@ -181,7 +205,6 @@ def upsert_nodes(conn: sqlite3.Connection, payload: Dict[str, Any], source_json:
 
         # ignore 'priority' entirely by design
 
-        # detect existing
         existing = cur.execute("SELECT edited_at_epoch FROM workflowy_nodes WHERE id = ?", (node_id,)).fetchone()
         if existing is None:
             cur.execute(
@@ -204,32 +227,21 @@ def upsert_nodes(conn: sqlite3.Connection, payload: Dict[str, Any], source_json:
             imported += 1
         else:
             old_edited = existing[0]
-            # update if edited_epoch differs OR any core fields differ (light check)
             if old_edited != edited_epoch:
                 cur.execute(
                     """
                     UPDATE workflowy_nodes SET
-                        name=?,
-                        note=?,
-                        parent_id=?,
-                        layout_mode=?,
-                        created_at_epoch=?,
-                        edited_at_epoch=?,
-                        completed_at_epoch=?,
-                        created_at=?,
-                        edited_at=?,
-                        completed_at=?,
-                        data_json=?,
-                        imported_at=?,
-                        source_json=?
+                        name=?, note=?, parent_id=?, layout_mode=?,
+                        created_at_epoch=?, edited_at_epoch=?, completed_at_epoch=?,
+                        created_at=?, edited_at=?, completed_at=?,
+                        data_json=?, imported_at=?, source_json=?
                     WHERE id=?
                     """,
                     (
                         name, note, parent_id, layout_mode,
                         created_epoch, edited_epoch, completed_epoch,
                         created_at, edited_at, completed_at,
-                        data_json, now_z, source_json,
-                        node_id
+                        data_json, now_z, source_json, node_id
                     ),
                 )
                 updated += 1
@@ -246,6 +258,7 @@ def main() -> int:
     json_dir = Path(os.getenv("WORKFLOWY_JSON_DIR", DEFAULT_JSON_DIR).strip() or DEFAULT_JSON_DIR)
     latest_path = Path(os.getenv("WORKFLOWY_JSON_LATEST", DEFAULT_JSON_LATEST).strip() or DEFAULT_JSON_LATEST)
     db_path = Path(os.getenv("WORKFLOWY_DB_PATH", DEFAULT_DB_PATH).strip() or DEFAULT_DB_PATH)
+    days_output = Path(os.getenv("WORKFLOWY_DAYS_OUTPUT", DEFAULT_DAYS_OUTPUT).strip() or DEFAULT_DAYS_OUTPUT)
     prefix = os.getenv("WORKFLOWY_NOTIFY_PREFIX", DEFAULT_PREFIX).strip() or DEFAULT_PREFIX
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -259,7 +272,6 @@ def main() -> int:
     ensure_schema(conn)
     conn.commit()
 
-    # insert run row
     conn.execute(
         "INSERT OR REPLACE INTO workflowy_import_runs(run_id, started_at, status, json_path, db_path) VALUES (?,?,?,?,?)",
         (run_id, started_at, "RUNNING", None, str(db_path)),
@@ -270,8 +282,14 @@ def main() -> int:
         payload = fetch_workflowy_json(api_key=api_key, api_url=api_url)
         json_file = write_json_files(payload, json_dir=json_dir, latest_path=latest_path)
 
+        days = extract_workflowy_days(iter_nodes(payload))
+        imported_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
         total, imported, updated = upsert_nodes(conn, payload, source_json=str(json_file))
+        replace_workflowy_days(conn, days, imported_at=imported_at)
         conn.commit()
+
+        write_feed_atomic(days, days_output, generated_at=imported_at)
 
         finished_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         conn.execute(
@@ -285,7 +303,9 @@ def main() -> int:
         conn.commit()
 
         telegram_notify.notify(
-            f"✅ Import OK\nDB: {db_path}\nJSON: {json_file}\nItems: {total} (new {imported}, upd {updated})",
+            f"✅ Import OK\nDB: {db_path}\nJSON: {json_file}\n"
+            f"Days: {len(days)} ({days_output})\n"
+            f"Items: {total} (new {imported}, upd {updated})",
             prefix=prefix,
         )
         return 0
