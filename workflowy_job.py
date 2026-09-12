@@ -50,6 +50,8 @@ DEFAULT_PREFIX = "workflowy-import"
 def notify_best_effort(message: str, *, prefix: str) -> None:
     try:
         telegram_notify.notify(message, prefix=prefix)
+    except SystemExit as error:
+        print(f"[WARN] Telegram notification exited: {error.code}", file=sys.stderr)
     except Exception as error:
         print(f"[WARN] Telegram notification failed: {type(error).__name__}", file=sys.stderr)
 
