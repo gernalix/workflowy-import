@@ -1,0 +1,99 @@
+schema_version: c2.project-capsule.v1
+identity:
+  project_id: 94
+  slug: workflowy-import
+  repository_id: R0094
+scope:
+  purpose: Back up Workflowy list-all data, import nodes to SQLite for Datasette, and publish a compact Calendar-day feed.
+  boundaries:
+    - This source repository implements the scheduled import job; it does not own Workflowy account data or the Oracle runtime host.
+    - C2 lifecycle and MegaVault project inventory remain in their canonical systems.
+repository:
+  canonical_workdir: /opt/workflowy_import
+  branch_policy: Canonical source is https://github.com/gernalix/workflowy-import on main; develop on an isolated repo-task branch and integrate through its protected PR path. Never edit or deploy directly to the Oracle runtime checkout.
+architecture:
+  summary: workflowy_job.py fetches Workflowy list-all JSON, writes timestamped and latest backups, upserts nodes and import-run records to SQLite, materializes Calendar days, writes a compact feed atomically, and sends best-effort Telegram notifications. workflowy_days.py extracts exact Calendar day nodes deterministically.
+  entrypoints:
+    - workflowy_job.py
+    - workflowy_days.py
+  important_paths:
+    - workflowy_job.py
+    - workflowy_days.py
+    - test_workflowy_days.py
+    - .github/workflows/ci.yml
+dependencies:
+  - name: Workflowy list-all API
+    purpose: Supplies the source nodes; access is through WORKFLOWY_API_KEY in the remote environment.
+  - name: Python requests
+    purpose: HTTP client used by workflowy_job.py.
+  - name: telegram_notify.py
+    purpose: Runtime-provided, gitignored best-effort notification helper; it is not part of this source tree.
+data:
+  schema: Runtime SQLite database contains workflowy_nodes, workflowy_import_runs, and workflowy_days tables. workflowy_job.py declares their columns and indexes in ensure_schema(); daily JSON backups and a latest JSON export are also written. The live runtime target is recorded by MegaVault as /home/ubuntu/sync_root/db/workflowy.db; source defaults can be overridden by environment.
+  migrations: No versioned migration directory is present. ensure_schema() creates the required tables/indexes idempotently; schema changes require review of the deployed database before runtime rollout.
+runtime:
+  services:
+    - workflowy-import.service (Oracle H0002; scheduled list-all backup/import into SQLite for Datasette; MegaVault service SVC0073).
+  timers:
+    - workflowy-import.timer (Oracle H0002; system timer recorded by MegaVault service SVC0073).
+  containers: []
+devices: []
+commands:
+  setup:
+    not_applicable: Runtime dependencies, environment configuration, and telegram_notify.py are supplied outside this source repository; Capsule validation does not install or configure them.
+  build:
+    not_applicable: The project is a directly executed Python job and has no build step.
+  test_targeted:
+    argv: [python3, -m, unittest, -v, test_workflowy_days.py]
+    cwd: .
+  test_full:
+    argv: [python3, -m, unittest, -v, test_workflowy_days.py]
+    cwd: .
+  lint:
+    not_applicable: No lint command is configured in the repository.
+  deploy_install:
+    not_applicable: Deployment targets an active Oracle service and requires an explicitly authorized runtime task.
+  smoke:
+    not_applicable: The job calls the authenticated Workflowy API and writes remote backups, database rows, and a feed; offline Capsule checks must not run it.
+  verify:
+    fast:
+      argv: [python3, /home/daniele/projects/codex-roadmap/tools/project_capsule.py, --repo, ., --mode, FAST]
+      cwd: .
+    full:
+      argv: [python3, /home/daniele/projects/codex-roadmap/tools/project_capsule.py, --repo, ., --mode, FULL]
+      cwd: .
+safety:
+  invariants:
+    - Keep Workflowy API credentials only in the remote environment file; never commit secrets or use live credentials in tests.
+    - Preserve timestamped source JSON backups and the SQLite data when validating or updating repository code.
+    - Treat /opt/workflowy_import and its systemd service/timer as remote runtime, outside the local Capsule adoption.
+  risky_operations:
+    - Running workflowy_job.py calls the authenticated API and writes JSON backups, the SQLite database, and the day feed; require an explicitly authorized runtime task.
+    - Schema changes or restores affect the live Datasette database and require a verified backup and reviewed migration plan.
+  recovery:
+    - Inspect the timestamped JSON backup under the configured WORKFLOWY_JSON_DIR before recovery; database/feed restoration must follow the Oracle runtime owner's verified backup procedure and is not performed by this repository check.
+acceptance:
+  - Capsule identity matches MegaVault project 94 and repository R0094.
+  - Offline unit tests and Python compilation pass without API credentials, remote database writes, or service changes.
+  - Runtime deployment, authenticated API calls, and database mutation remain explicitly gated.
+references:
+  megavault: /home/daniele/MegaVault/megavault.sqlite
+  c2: /home/daniele/projects/codex-roadmap/roadmap.sqlite
+freshness:
+  reviewed_commit: caec39835029dad0ff60922023a81effaa5817e7
+  watch_paths:
+    - workflowy_job.py
+    - workflowy_days.py
+    - test_workflowy_days.py
+    - .github/workflows/ci.yml
+    - .gitignore
+artifacts:
+  agents: AGENTS.md
+validation_hooks:
+  - id: offline-workflowy-tests
+    argv: [python3, -m, unittest, -v, test_workflowy_days.py]
+    cwd: .
+    safe: true
+change_verification:
+  - paths: [project-capsule.yaml, AGENTS.md]
+    commands: [test_targeted]
