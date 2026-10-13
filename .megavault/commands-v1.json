@@ -1,0 +1,30 @@
+{
+  "contract_version": "megavault.command/v1",
+  "project_id": 94,
+  "owner": "workflowy-import",
+  "commands": [
+    {
+      "key": "scheduled_import",
+      "host_scope": "H0002",
+      "entrypoint": "python3",
+      "argv": ["workflowy_job.py"],
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "working_directory": ".",
+      "prerequisites": [
+        "Oracle runtime checkout /opt/workflowy_import",
+        "WORKFLOWY_API_KEY and output paths supplied by the runtime provider",
+        "workflowy-import.service runtime ownership on H0002"
+      ],
+      "timeout_seconds": 600,
+      "idempotency": "non_idempotent",
+      "risk": "high",
+      "state": "disabled",
+      "description": "Fetch Workflowy list-all data and update runtime backups, SQLite, and Calendar feed; disabled because authenticated execution and Oracle writes require a separate authorized runtime task."
+    }
+  ]
+}
