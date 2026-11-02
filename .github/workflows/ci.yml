@@ -28,6 +28,6 @@ jobs:
       - name: Run tests
         env:
           PYTHONDONTWRITEBYTECODE: '1'
-        run: python -m unittest -v test_workflowy_days.py
+        run: python -m unittest discover -s . -p 'test_*.py' -v
       - name: Compile Python
-        run: python -m py_compile workflowy_days.py workflowy_job.py test_workflowy_days.py
+        run: python -m py_compile workflowy_days.py workflowy_storage.py workflowy_job.py test_workflowy_days.py test_workflowy_storage.py
