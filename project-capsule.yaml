@@ -20,7 +20,9 @@ architecture:
   summary: workflowy_job.py fetches Workflowy list-all JSON, writes timestamped and
     latest backups, upserts nodes and import-run records to SQLite, materializes Calendar
     days, writes a compact feed atomically, and sends best-effort Telegram notifications.
-    workflowy_days.py extracts exact Calendar day nodes deterministically.
+    workflowy_days.py extracts exact Calendar day nodes deterministically. workflowy_storage.py
+    independently owns node normalization, schema and upserts on the caller connection;
+    job-level HTTP, credential and notification imports remain outside it.
   entrypoints:
   - workflowy_job.py
   - workflowy_days.py
@@ -29,6 +31,8 @@ architecture:
   - workflowy_days.py
   - test_workflowy_days.py
   - .github/workflows/ci.yml
+  - workflowy_storage.py
+  - test_workflowy_storage.py
 dependencies:
 - name: Workflowy list-all API
   purpose: Supplies the source nodes; access is through WORKFLOWY_API_KEY in the remote
@@ -44,9 +48,9 @@ data:
     in ensure_schema(); daily JSON backups and a latest JSON export are also written.
     The live runtime target is recorded by MegaVault as /home/ubuntu/sync_root/db/workflowy.db;
     source defaults can be overridden by environment.
-  migrations: No versioned migration directory is present. ensure_schema() creates
-    the required tables/indexes idempotently; schema changes require review of the
-    deployed database before runtime rollout.
+  migrations: workflowy_storage.ensure_schema creates the existing tables/indexes
+    idempotently without changing the caller transaction; the job re-exports legacy
+    names. No live schema/data migration or Oracle deployment is part of source checks.
 runtime:
   services:
   - workflowy-import.service (Oracle H0002; scheduled list-all backup/import into
@@ -73,7 +77,7 @@ commands:
     - test_workflowy_days.py
     cwd: .
   test_full:
-    argv:
+    argv: &id001
     - bwrap
     - --die-with-parent
     - --unshare-net
@@ -123,8 +127,9 @@ commands:
     - '1'
     - /bin/bash
     - -c
-    - set -euo pipefail; python3 -B -m unittest -v test_workflowy_days.py; PYTHONPYCACHEPREFIX=/tmp/pycache
-      python3 -m py_compile workflowy_job.py workflowy_days.py
+    - set -euo pipefail; python3 -B -m unittest discover -s . -p 'test_*.py' -v; PYTHONPYCACHEPREFIX=/tmp/pycache
+      python3 -m py_compile workflowy_job.py workflowy_days.py workflowy_storage.py
+      test_workflowy_storage.py
     cwd: .
   lint:
     not_applicable: No lint command is configured in the repository.
@@ -181,72 +186,23 @@ references:
   megavault: /home/daniele/MegaVault/megavault.sqlite
   c2: Historical-only format reference; no runtime or lifecycle dependency.
 freshness:
-  reviewed_commit: 0b2907922205d04b03f63199161469e1ddf05d29
+  reviewed_commit: 8b0aae45352883a4059086e57db698bb4d3d092a
   watch_paths:
   - workflowy_job.py
   - workflowy_days.py
   - test_workflowy_days.py
   - .github/workflows/ci.yml
   - .gitignore
+  - workflowy_storage.py
+  - test_workflowy_storage.py
 artifacts:
   agents: AGENTS.md
   architecture: AGENTS.md
   operations: AGENTS.md
-  data_model: workflowy_job.py
+  data_model: workflowy_storage.py
 validation_hooks:
-- id: isolated-source-verification
-  argv:
-  - bwrap
-  - --die-with-parent
-  - --unshare-net
-  - --unshare-pid
-  - --ro-bind
-  - /
-  - /
-  - --tmpfs
-  - /home
-  - --tmpfs
-  - /run
-  - --tmpfs
-  - /tmp
-  - --tmpfs
-  - /mnt
-  - --tmpfs
-  - /media
-  - --tmpfs
-  - /var/lib
-  - --proc
-  - /proc
-  - --dev
-  - /dev
-  - --ro-bind
-  - .
-  - /tmp/work
-  - --ro-bind
-  - /home/daniele/.local/lib/python3.14/site-packages
-  - /home/daniele/.local/lib/python3.14/site-packages
-  - --chdir
-  - /tmp/work
-  - --clearenv
-  - --setenv
-  - PATH
-  - /usr/bin:/bin
-  - --setenv
-  - HOME
-  - /tmp
-  - --setenv
-  - PYTHONPATH
-  - /tmp/work:/tmp/work/src:/home/daniele/.local/lib/python3.14/site-packages
-  - --setenv
-  - PYTHONDONTWRITEBYTECODE
-  - '1'
-  - --setenv
-  - PYTEST_DISABLE_PLUGIN_AUTOLOAD
-  - '1'
-  - /bin/bash
-  - -c
-  - set -euo pipefail; python3 -B -m unittest -v test_workflowy_days.py; PYTHONPYCACHEPREFIX=/tmp/pycache
-    python3 -m py_compile workflowy_job.py workflowy_days.py
+- id: isolated-source-and-boundary-tests
+  argv: *id001
   cwd: .
   safe: true
 change_verification:
