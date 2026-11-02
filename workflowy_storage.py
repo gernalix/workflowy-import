@@ -177,4 +177,3 @@ def upsert_nodes(conn: sqlite3.Connection, payload: Dict[str, Any], source_json:
                 updated += 1
 
     return total, imported, updated
-
