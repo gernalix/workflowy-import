@@ -24,19 +24,19 @@ import json
 import os
 import sqlite3
 import sys
-import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 try:
     import requests
-except Exception as e:  # pragma: no cover
-    print(f"[ERROR] Missing dependency 'requests': {e}")
+except Exception:  # pragma: no cover
+    print("[ERROR] Missing dependency 'requests'")
     sys.exit(10)
 
 import telegram_notify
 from workflowy_days import extract_workflowy_days, write_feed_atomic
+from workflowy_failure import FAILURE_MESSAGE, ImportFailure, record_import_failure
 from workflowy_storage import (utc_z_from_epoch, iter_nodes, ensure_schema,
                               replace_workflowy_days, upsert_nodes)
 
@@ -52,10 +52,10 @@ DEFAULT_PREFIX = "workflowy-import"
 def notify_best_effort(message: str, *, prefix: str) -> None:
     try:
         telegram_notify.notify(message, prefix=prefix)
-    except SystemExit as error:
-        print(f"[WARN] Telegram notification exited: {error.code}", file=sys.stderr)
-    except Exception as error:
-        print(f"[WARN] Telegram notification failed: {type(error).__name__}", file=sys.stderr)
+    except SystemExit:
+        print("[WARN] Telegram notification exited", file=sys.stderr)
+    except Exception:
+        print("[WARN] Telegram notification failed", file=sys.stderr)
 
 
 
@@ -73,7 +73,7 @@ def fetch_workflowy_json(api_key: str, api_url: str, timeout_s: int = 300) -> Di
     }
     r = requests.get(api_url, headers=headers, timeout=timeout_s)
     if r.status_code != 200:
-        raise RuntimeError(f"Workflowy API HTTP {r.status_code}: {r.text[:500]}")
+        raise ImportFailure()
     return r.json()
 
 
@@ -161,27 +161,15 @@ def main() -> int:
         )
         return 0
 
-    except Exception as e:
+    except Exception:
         finished_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        err = "".join(traceback.format_exception(type(e), e, e.__traceback__))[-3500:]
-        try:
-            conn.execute(
-                """
-                UPDATE workflowy_import_runs
-                SET finished_at=?, status=?, error=?
-                WHERE run_id=?
-                """,
-                (finished_at, "ERROR", err, run_id),
-            )
-            conn.commit()
-        except Exception:
-            pass
+        record_import_failure(conn, run_id=run_id, finished_at=finished_at)
 
         notify_best_effort(
-            f"❌ Import FAILED\nDB: {db_path}\nError: {str(e)}\n\n{err}",
+            f"❌ Import FAILED\nError: {FAILURE_MESSAGE}",
             prefix=prefix,
         )
-        raise
+        raise ImportFailure() from None
     finally:
         conn.close()
 
