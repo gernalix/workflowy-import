@@ -23,6 +23,9 @@ architecture:
     workflowy_days.py extracts exact Calendar day nodes deterministically. workflowy_storage.py
     independently owns node normalization, schema and upserts on the caller connection;
     job-level HTTP, credential and notification imports remain outside it.
+    workflowy_failure.py handles fixed public diagnostics and rollback of pending
+    job-owned imports before recording ERROR. Committed backups, database changes
+    and feed writes are not one atomic transaction.
   entrypoints:
   - workflowy_job.py
   - workflowy_days.py
@@ -33,6 +36,8 @@ architecture:
   - .github/workflows/ci.yml
   - workflowy_storage.py
   - test_workflowy_storage.py
+  - workflowy_failure.py
+  - test_workflowy_failure.py
 dependencies:
 - name: Workflowy list-all API
   purpose: Supplies the source nodes; access is through WORKFLOWY_API_KEY in the remote
@@ -129,7 +134,7 @@ commands:
     - -c
     - set -euo pipefail; python3 -B -m unittest discover -s . -p 'test_*.py' -v; PYTHONPYCACHEPREFIX=/tmp/pycache
       python3 -m py_compile workflowy_job.py workflowy_days.py workflowy_storage.py
-      test_workflowy_storage.py
+      test_workflowy_storage.py workflowy_failure.py test_workflowy_failure.py
     cwd: .
   lint:
     not_applicable: No lint command is configured in the repository.
@@ -186,7 +191,7 @@ references:
   megavault: /home/daniele/MegaVault/megavault.sqlite
   c2: Historical-only format reference; no runtime or lifecycle dependency.
 freshness:
-  reviewed_commit: 8b0aae45352883a4059086e57db698bb4d3d092a
+  reviewed_commit: 21538c262a2d5ac46294db9a4861d086ddc296ba
   watch_paths:
   - workflowy_job.py
   - workflowy_days.py
@@ -195,6 +200,8 @@ freshness:
   - .gitignore
   - workflowy_storage.py
   - test_workflowy_storage.py
+  - workflowy_failure.py
+  - test_workflowy_failure.py
 artifacts:
   agents: AGENTS.md
   architecture: AGENTS.md
